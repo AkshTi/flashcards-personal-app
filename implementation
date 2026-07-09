@@ -1,0 +1,492 @@
+# Notes on PyTorch
+
+Our standard implementations on our way to becoming a MLE that companies are bidding on.
+
+> ***Top companies are begging me to join them** and beating out their offers to poach me in the **fall 2026 recruiting** cycle, and **I have exceeded my starting salary goal of $900,000**.*
+> 
+
+# Transformer Architectures
+
+## Single Head Attention
+
+```python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class AttentionHead(nn.Module):
+		def __init__(self, d_model, d_v):
+			super().__init__()
+			self.d_model = d_model # model dimensions 
+			self.d_v = d_v
+			self.Q_W = nn.Linear(d_model, d_model, bias=False)
+			self.Q_K = nn.Linear(d_model, d_model, bias=False)
+			self.Q_V = nn.Linear(d_model, d_v, bias=False)
+			self.device = "cuda" if cuda.mps.is_available() else "cpu"
+		
+		def forward(self, x, causal=False):
+			q = self.Q_W(x) #create and obtain key, query, value vectors 
+			k = self.Q_K(x)
+			v = self.Q_V(x)
+			scores = q @ k.transpose(-2, -1) / torch.sqrt(k.shape[-1]) # obtain the scores using formula.
+			if causal: #causal attention 
+				mask = torch.triu(torch.ones((k.shape[-1], k.shape[-1]), device=self.device, dtype=torch.float32), diagonal=1)
+				# keeps upper triangle of matrix and zeroes out the lower triangle, but
+				# diagonal = 1 does not keep the main diagonal.
+				scores = scores.masked_fill(mask == 1, -float("inf"))
+			softmax_value = F.softmax(scores, dim=-1)
+			return softmax_value @ v
+```
+
+→ d_k is the length of the query and value vectors, and often equals `d_model`
+
+→ d_v is the length of each value vector 
+
+→ d_model is how dimensional a vector is and every layer reads that width and writes that width. 
+
+- bias = False ****because the dot product will yield unnecessary positional information.
+
+## Multi-head Attention
+
+Second step to single head attention, implements several attention heads in a block.
+
+```python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class MultiHeadAttention(nn.Module):
+	def __init__(self, num_heads, d_model):
+		self.d_heads = num_heads
+		self.head_dim = num_heads // d_model
+		self.d_model = d_model
+		self.layers = nn.ModuleList([AttentionHead(self.head_dim) for _ in range(num_heads)
+		self.device = "cuda" if torch.device.available() else "cpu"
+		self.o_proj = nn.Linear(self.d_model, d_model, bias=False)
+				
+	def forward(self, x):
+		res = []
+		for layer in self.layers:
+			res.append(layer(x))
+		val = torch.cat(res, device=self.device)
+		attn = self.o_proj(val)
+		return attn
+```
+
+## Transformer Block
+
+```python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class TransformerBlock(nn.Module):
+	def __init__(self, num_heads, d_model):
+		super().__init__()
+		self.layer_norm_1 = nn.LayerNorm(d_model)
+		self.layer_norm_2 = nn.LayerNorm(d_model)
+		self.mlp = nn.Sequential(nn.Linear(d_model, 4*d_model),
+															nn.ReLU(),
+															nn.Linear(4*d_model, d_model))
+		self.multiHeadAttention = MultiHeadAttention(num_heads, d_model)
+		
+	def forward(self, x):
+		x = x + self.multiHeadAttention(self.layer_norm_1(x))
+		x = x + self.mlp(self.layer_norm_2(x))
+		return x
+```
+
+## Transformer
+
+```python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class Transformer(nn.Module):
+	def __init__(self, num_blocks, num_heads, d_model, d_vocab):
+		super().__init__()
+		self.num_blocks = num_blocks
+		self.blocks = nn.ModuleList([TransformerBlock(num_heads, d_model) for _ in range(num_blocks)])
+		self.embedding = nn.Embedding([d_vocab, d_model]) #takes in (num_embeddings, embedding_Dim)*
+		self.output_layer = nn.Linear(d_model, d_vocab)
+	
+	def forward(self, x):
+		#taking in token indices you need to do embedding
+		x = self.embedding(x)
+		for transformer_block in self.blocks:
+			x = transformer_block(x)
+		x = self.output_layer(x)
+		return x #creating new blocks in forward means that 
+		# there is no learning that takes place and those are randomly initialized.
+```
+
+- you need a moduleList because PyTorch tracks parameters in a moduleList and optimizer cannot update these weights.
+- nn.Sequential / nn.ModuleList is required because then you would have only one block being used and only those parameters would be updated.
+- Pytorch builds a tree that is then within nn.Module and then this goes through Transformer → TransformerBlock → MultiHeadAttention → AttentionHead
+    - Then when you do loss.backward() it goes through the tree and computes.
+
+# Training Methods
+
+## Lossy Functions
+
+### Multi-class Cross Entropy Loss
+
+```python
+    clipped_probs = torch.clamp(predicted_probs , min=epsilon, max=1.0) 
+    val = -1 * torch.sum(torch.log(clipped_probs) * true_labels)
+    res = val / predicted_probs.shape[0]
+    return res.item()
+```
+
+- torch.clamp helps prevent log of zero.
+
+### Binary Cross Entropy Calculation
+
+```python
+not_pred = torch.log(1 - torch.clamp(y_pred, min=epsilon, max=1.0))
+not_true = y_true == 0
+return torch.sum(y_true * -1*torch.log(torch.clamp(y_pred, min=epsilon, max=1.0)) + -1*not_pred * not_true).item() / y_true.shape[0]
+```
+
+### MSE
+
+```python
+# Your code here
+  for _ in range(n_epochs):
+    m = X.shape[0]
+    n = X.shape[1]
+    if method == "batch":
+      gradient = (2 / m) * X.T @ (X @ weights - y)
+      weights = weights - gradient*learning_rate
+    elif method == "stochastic":
+      for i in range(m):
+        x = X[i:i+1]
+        y_val = y[i:i+1]
+        gradient = (2 / 1) * x.T @ (x @ weights - y_val)
+        weights = weights - gradient * learning_rate
+    else: # "mini-batch"
+      for i in range(0, m, batch_size):
+        x = X[i:i+batch_size] #[batch_size, n]
+        y_val = y[i:i+batch_size] #[batch_size,]
+        gradient = (2 / batch_size) * x.T @ (x @ weights - y_val)
+        weights = weights - gradient * learning_rate
+  return weights 
+```
+
+- batch → no grouping, stochastic means in each sample, and mini batch contains batch size. You must normalize by a different value each time.
+
+## Binary Classification
+
+### Logistic Regression Binary Classification
+
+```python
+def predict_logistic(X: torch.Tensor, weights: torch.Tensor, bias: float) -> torch.Tensor:
+	res = X @ weights + bias
+  probs = torch.sigmoid(res)
+  return probs >= 0.5
+```
+
+- You can categorize probabilities with a probability using torch.sigmoid and classify if ≥ 0.5
+
+## K-Means Clustering
+
+```python
+def k_means_clustering(points: list[tuple[float, ...]], k: int, initial_centroids: list[tuple[float, ...]], max_iterations: int) -> list[tuple[float, ...]]:
+	# Your code here
+  points = torch.tensor(points)
+  initial_centroids = torch.tensor(initial_centroids)
+
+  for _ in range(max_iterations):
+    distances = torch.cdist(initial_centroids, points) #[N, P]
+    indices = torch.argmin(distances, dim=0) #[N, K]
+    one_hot = F.one_hot(indices, num_classes=k).float() #[4, 2] x [2, 2]
+    counts = one_hot.sum(dim=0)
+    summation_coords = one_hot.T @ points #[2, 2]
+    initial_centroids = summation_coords / torch.clamp(counts, min=1.0).unsqueeze(-1)
+  return initial_centroids
+```
+
+- Keep in mind that we are going through and casting the centroids (rows) and distances (columns)
+- In this case, one-hot allows us to assume that we only want the part that is selected and then we can obtain that point by a dot product and adding them across
+- Then you can just take the average and set it across the iterations.
+
+### Momentum
+
+```python
+def momentum_optimizer(parameter, grad, velocity, learning_rate=0.01, momentum=0.9):
+  velocity = momentum * velocity + learning_rate * grad 
+  parameter = parameter - velocity * parameter 
+  return parameter 
+```
+
+$v_t = \lambda v_{t-1}+\eta\nabla_\theta J(\theta)$
+
+$\theta_t = \theta_{t-1}-v_t$
+
+### Adam Optimizer
+
+```python
+import torch
+
+def adam_optimizer(
+    parameter: torch.Tensor,
+    grad: torch.Tensor,
+    m: torch.Tensor,
+    v: torch.Tensor,
+    t: int,
+    learning_rate: float = 0.001,
+    beta1: float = 0.9,
+    beta2: float = 0.999,
+    epsilon: float = 1e-8
+):
+		
+    parameter = torch.as_tensor(parameter, dtype=torch.float64)
+    grad = torch.as_tensor(grad, dtype=torch.float64)
+    m = torch.as_tensor(m, dtype=torch.float64)
+    v = torch.as_tensor(v, dtype=torch.float64)
+    # Your code here
+    m = beta_1 * m + (1 - beta_1) * gradient
+    v = beta_2 * v + (1 - beta_2) * gradient**2
+    m_hat = m / (1 -beta_1**t)
+    v_hat = v / (1- beta_2**t)
+    parameter = parameter - learning_rate * m_hat / torch.sqrt(v_t + epsilon) * gradient
+    return torch.round(parameter, decimals=5), torch.round(m, decimals=5), torch.round(v, decimals=5)
+```
+
+### AdamW Optimizer
+
+```python
+import torch
+
+def adamw_update(w: torch.Tensor, g: torch.Tensor, m: torch.Tensor, v: torch.Tensor, t: int, lr: float, beta1: float, beta2: float, epsilon: float, weight_decay: float) -> tuple:
+    # Your code here
+    parameter = torch.as_tensor(parameter, dtype=torch.float64)
+    grad = torch.as_tensor(grad, dtype=torch.float64)
+    m = torch.as_tensor(m, dtype=torch.float64)
+    v = torch.as_tensor(v, dtype=torch.float64)
+    # Your code here
+    m = beta_1 * m + (1 - beta_1) * gradient
+    v = beta_2 * v + (1 - beta_2) * gradient**2
+    m_hat = m / (1 -beta_1**t)
+    v_hat = v / (1- beta_2**t)
+    weight = weight - learning_rate * weight * momentum
+    w = weight - learning_rate * m_hat / torch.sqrt(v_t + epsilon) * gradient
+    return torch.round(parameter, decimals=5), torch.round(m, decimals=5), torch.round(v, decimals=5)
+```
+
+## Shifting Labels
+
+Given a sequence of token ids, x= [t0, t1, t2, t3, t4] a model should learn that given t0, t1 predict t2. 
+
+→ logits comes out of the model as (batch, seq_len, vocab_size) which is a full probability distribution over the vocabulary for every sequence in batch.
+
+→ labels is (batch, seq_len) or integer token ids. 
+
+However, F.cross_entropy expects specific shape contract of logits as (N, C) and labels as (N,) and requires a flattened list. Therefore you must collapse batch and sequence length together into one dimension. 
+
+```python
+def reshape_crossentropy(logits, labels):
+	batch, seq_len, vocab_size = logits.shape
+	logits = logits.view(batch * seq_len, vocab_size)
+	labels = labels.view(batch * seq_len)
+	return F.crossentropy(logits, labels)
+```
+
+## Perplexity
+
+- perplexity takes the exponent of the cross entropy and a perplexity of 10 means the model is about as uncertain as if it is choosing among 10 equally likely options at each step.
+    - Random guessing gives perplexity of a vocab size V.
+- perplexity = torch.exp(loss)
+
+```python
+def perplexity(loss_value):
+	return torch.exp(loss_value) 
+```
+
+# Embeddings
+
+## RoPE
+
+```python
+import torch
+
+def apply_rope(x: torch.Tensor, positions: torch.Tensor, base: float = 10000.0) -> torch.Tensor:
+    """
+    Apply Rotary Positional Embeddings (RoPE) to input embeddings.
+    
+    Args:
+        x: Input embeddings of shape (seq_len, d), d must be even
+        positions: Position indices of shape (seq_len,)
+        base: Base for frequency computation (default: 10000.0)
+    
+    Returns:
+        Embeddings with rotary positional encoding applied, shape (seq_len, d)
+    """
+    # Your code here
+    seq_len, d= x.shape
+    i = torch.arange(0, d//2, dtype=torch.float32)
+    # split up into pairs, and each pair gets its own rotation
+    # speed and it essentially labels which pairs
+    theta = 1.0 / (base**(2.0*i/d))
+    # this gives each pair into a rotation speed. Smaler pair numbers
+    # have a smaller rotation amount.
+
+    angles = torch.outer(positions.float(), theta)
+		# you have th epositions for the tokens, and thetas for 
+		# which ones are fast or slow, per pairs.
+		# multiplies every position by evrey speed. 
+		#then the angles[m, i] means how much the i rotates by position m.
+    sin_angles = torch.sin(angles)
+    cos_angles = torch.cos(angles)
+    # now you can obtain the sine and cosine of every element.
+
+    x_even = x[:, 0::2] #x1
+    x_odd = x[:, 1::2] #x2
+    # here you can just separate out your points by the x1, x2 
+    # and in this it is. ashortcut to calculate ex_even an x_odd
+
+    x_rot_even = x_even * cos_angles - x_odd * sin_angles
+    x_rot_odd = x_even * sin_angles + x_odd * cos_angles
+
+    result = torch.zeros_like(x)
+    result[:, 0::2] = x_rot_even
+    result[:, 1::2] = x_rot_odd
+
+    return result
+
+```
+
+## RoPE Idea
+
+For a two-dimensional vector, rotating by $\theta$ is a linear:
+
+```python
+[x1']   [cos θ  -sin θ] [x1]
+[x2'] = [sin θ   cos θ] [x2]
+```
+
+RoPE **condenses** head_dim into head_dim / 2 paris and rotates each by angles that depend on position and what pair it is. 
+
+Low pairs rotate fast 
+
+Higher pairs rotate slower.
+
+why this gives you relative position:  When you compute `q_m * k_n` you rotate by angle `m * theta` 
+
+→ only depends on `(m-n)theta` and only the differnece is in the attention score. 
+
+## Sinusoidal Position Embeddings
+
+```python
+def sinusoidal_pe(seq_len, d, base=10000.0):
+	position = torch.arange(seq_len)
+	#obtain all of the positions of the tokens
+	position = position.unsqueeze(1).float()
+	# adds a new dimension so then it is a column since we want to multiply
+	# down the line by a row vector.
+	i = torch.arange(0, d, 2).float()
+	# steps by two and you want the even numbers 
+	div_term = base ** (-i/d)
+	pe = torch.zeros(seq_len, d)
+	#allocates an empty array
+	pe[:, 0::2] = torch.sin(position * div_term)
+	# similar to torch.outer
+	# in this case, the (6, 1) and (4,) broadcast and then this is similar to torch.outer
+	pe[:, 1::2] = torch.cos(position * div_term)
+	# in this case the odd index columsn are being filled in
+	return pe 
+```
+
+## Positional Embeddings
+
+```python
+class LearnedPositionalEmbeddings(nn.Module):
+	def __init__(self, max_seq_len, d_model):
+		super().__init__()
+		self.pos_embedding = nn.Embedding(max_seq_len, d_model)
+	
+	def forward(self, x):
+		seq_len = x.shape(1)
+		positions = torch.arange(seq_len, device=x.device)
+		positional_embedding = self.pos_embedding(positions) +x
+		return positional_embedding
+```
+
+# KV Cache
+
+```python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+def kv_cache_attention_step(x_new: torch.Tensor, W_Q: torch.Tensor, W_K: torch.Tensor, W_V: torch.Tensor, cache: tuple) -> tuple:
+    """
+    Perform a single attention step with KV caching.
+    
+    Args:
+        x_new: New token embedding, shape (d_model,)
+        W_Q: Query projection matrix, shape (d_model, d_k)
+        W_K: Key projection matrix, shape (d_model, d_k)
+        W_V: Value projection matrix, shape (d_model, d_v)
+        cache: Tuple (K_cache, V_cache) of tensors or None if first step
+    
+    Returns:
+        Tuple (output, updated_cache) where output is shape (d_v,)
+        and updated_cache is (K_new, V_new)
+    """
+    new_Q =  x_new @ W_Q
+    new_K =  x_new @ W_K
+    new_V =  x_new @ W_V
+    # print(new_Q.shape)
+    if not cache:
+        K_cache = new_K.unsqueeze(0)
+        V_cache = new_V.unsqueeze(0)
+    else:
+        K_cache = torch.cat([cache[0], new_K.unsqueeze(0)], dim=0)
+        V_cache = torch.cat([cache[1], new_V.unsqueeze(0)], dim=0)
+    d_k = W_Q.shape[1]
+    scores = new_Q @ K_cache.transpose(-2, -1) / torch.sqrt(torch.tensor(d_k, dtype=x_new.dtype))
+    softmax = F.softmax(scores, dim=-1)
+    out = softmax @ V_cache
+    return out, (K_cache, V_cache)
+```
+
+# MQA
+
+- the change is that the K and V vectors are only one head dimension difference.
+
+```python
+def MultiQueryAttention(nn.Module):
+	def __init__(self, d_model, n_heads):
+		super().__init__()
+		head_dim = d_model // n_heads
+		self.Q_W = nn.Linear(d_model, d_model)
+		self.Q_K = nn.Linear(d_model, head_dim)
+		self.Q_V = nn.Linear(d_model, head_dim)
+		...
+	def forward(self, x):
+		q = self.Q_W(x)
+		k = self.Q_K(x)
+		v = self.Q_V(x)
+```
+
+# GQA
+
+```python
+def GlobalQueryAttention(nn.Module):
+	def __init__(self, d_model, n_heads, n_groups):
+		super().__init__()
+		head_dim = d_model // n_heads
+		self.Q_W = nn.Linear(d_model, d_model)
+		self.Q_K = nn.Linear(d_model, head_dim * n_groups)
+		self.Q_V = nn.Linear(d_model, head_dim * n_groups)
+		
+	def forward(self, x):
+		k = k.repeat_interleave(num_heads // num_kv_heads, dim=1)
+		v = v.repeat_interleave(num_heads // num_kv_heads, dim=1)
+```
+
+- In this case, instead of computing with same d_model → d_model projection, the k and v are a smaller size.
+
+# Training
