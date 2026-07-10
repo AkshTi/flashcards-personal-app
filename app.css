@@ -407,17 +407,34 @@
         .fd-cardrow { flex-direction: column; }
         .fd-cardrow-side { flex-direction: row; align-items: center; width: 100%; justify-content: space-between; }
 
-        /* Let the flash card use most of the viewport height and scroll
-           internally instead of clipping long text/code with no way to
-           reach the rest of it. justify-content:center + overflow:auto is
-           a classic trap — centered content that overflows can center-clip
-           its top edge out of scroll range, so top-align instead whenever
-           the card might not fit. */
-        .fd-flip { aspect-ratio: auto; height: min(62vh, 62dvh); min-height: 260px; }
-        .fd-flip.tall { height: min(70vh, 70dvh); }
-        .fd-face { padding: 26px 18px; justify-content: flex-start; }
-        .fd-face-tag { top: -26px; margin: -26px -18px 8px; padding: 12px 18px 4px; }
-        .fd-face-hint { position: static; margin: 12px 0 0; padding: 0; }
+        /* The card grows to fit its content and the PAGE scrolls. iOS Safari
+           can't reliably scroll overflow inside a 3D-transformed element, so
+           the desktop flip-card (internal scroll) clips content on a phone.
+           Here we DROP the 3D flip: the two faces are grid-stacked and
+           crossfade by opacity. No 3D transform means no scroll bug and no
+           backface/mirroring issues; the container sizes to the taller face
+           and the whole page scrolls to reveal everything. */
+        .fd-flip { aspect-ratio: auto; height: auto; min-height: 0; display: grid; transform: none !important; transition: none; }
+        .fd-face {
+          position: relative; inset: auto; grid-area: 1 / 1;
+          overflow: visible; min-height: 44vh; padding: 22px 16px;
+          justify-content: flex-start;
+          transform: none !important; backface-visibility: visible;
+          opacity: 0; transition: opacity .22s ease; pointer-events: none;
+        }
+        .fd-flip:not(.flipped) .fd-front,
+        .fd-flip.flipped .fd-backface { opacity: 1; pointer-events: auto; }
+        .fd-face-tag { position: static; margin: 0 0 10px; padding: 0; background: none; }
+        .fd-face-hint { position: static; margin: 12px 0 0; padding: 0; background: none; }
+
+        /* Code lines were clipped at the card edge — overflow-x:auto needs a
+           swipe that's easy to miss. Wrap instead, so every character shows
+           without any horizontal gesture. */
+        .fd-face-codewrap .fd-code {
+          white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;
+          overflow-x: hidden; font-size: 12.5px;
+        }
+        .fd-face-codewrap .fd-codeline.slot { overflow-wrap: break-word; }
       }
       @media (prefers-reduced-motion: reduce) {
         .fd-flip { transition: none; }
